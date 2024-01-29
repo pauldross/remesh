@@ -6,15 +6,7 @@
 #ifndef GLYPH3D_REMESH_H
 #define GLYPH3D_REMESH_H
 
-#include <vtkNew.h>
-#include <vtkRenderWindowInteractor.h>
-#include <vtkRenderer.h>
-#include <vtkCellData.h>
-#include <vtkPointData.h>
-#include <vtkDoubleArray.h>
-#include <vtkGenericDataObjectReader.h>
-#include <vtkUnstructuredGrid.h>
-#include <vtkInformation.h>
+#include "VTKParser/depend/VTKParser.h"
 #include <cmath>
 #include <string>
 #include <iostream>
@@ -24,51 +16,58 @@
 #include <regex>
 #include <utility>
 #include <filesystem>
-#include <vtkIndent.h>
-#include <vtkInformationIterator.h>
-#include <vtkInformationKey.h>
+#include "VTKParser/depend/VTKParser.h"
+
 
 //#define old
 
 typedef struct RET_JD {
-    vtkIdType PID;
+    int PID;
     double deltaj;
     double percChange;
 
-    RET_JD(vtkIdType PID, double deltaj, double percChange) : PID(PID), deltaj(deltaj), percChange(percChange) {};
+    RET_JD(int PID, double deltaj, double percChange) : PID(PID), deltaj(deltaj), percChange(percChange) {};
 } RET_JD;
+
+bool g_debug;
 
 namespace fs = std::filesystem;
 
 #define B_PT(v) {v[0], v[1], v[3]}
-
+#define PARSE_PT_TO_POINT(V) {V->at(0), V->at(1), V->at(2)}
 
 namespace remesh {
 
     std::string meshFileName;
 
-    RET_JD getJdelta(vtkIdType Pid, vtkPoints *PointArray, vtkDoubleArray *D_array, vtkUnstructuredGrid *output) {
+    RET_JD getJdelta(int Pid, VTKparser &parser) {
         // get cells connected to point
+        auto jc_p = parser.getBFromPID(Pid);
+//        Point Jc = B_PT(D_array->GetTuple3(Pid));
+        Point Jc = PARSE_PT_TO_POINT(jc_p);
 
-        Point Jc = B_PT(D_array->GetTuple3(Pid));
-        vtkIdType ncells;
-        vtkIdType *cells;
-        output->GetPointCells(Pid, ncells, cells);
+
+        int ncells;
+        auto cells = parser.getCellIDsFromPointIDs(Pid,ncells);
+//        output->GetPointCells(Pid, ncells, cells);
         double max = -10000;
-        vtkIdType pid = Pid;
+        int pid = Pid;
         //loop through cells
 //        cout << "--------------" << endl;
 //        cout << "Pid" << ": "<< Pid << " Jc: " << Jc << endl;
-        for (vtkIdType i = 0; i < ncells; i++) {
+        for (int i = 0; i < ncells; i++) {
             // loop through points in cell
-            vtkIdType npts;
-            vtkIdType const *pts;
-            output->GetCellPoints(cells[i], npts, pts);
-            for (vtkIdType k = 0; k < npts; k++) {
+            int npts;
+//            vtkIdType const *pts;
+//            output->GetCellPoints(cells->at(i), npts, pts);
+            auto pts = parser.getPointIDsFromCellId(cells->at(i), npts);
+
+            for (int k = 0; k < npts; k++) {
                 // if pid isn't pid calc change in J between id and pid
-                if (pts[k] != Pid) {
+                if (pts->at(k) != Pid) {
                     // compare with current max
-                    Point J = B_PT(D_array->GetTuple3(pts[k]));
+//                    Point J = B_PT(D_array->GetTuple3(pts[k]));
+                    Point J = PARSE_PT_TO_POINT(parser.getBFromPID(pts->at(k)));
                     double n1 = Jc.norm();
                     double n2 = J.norm();
                     double diff_norm = n1 - n2;
@@ -77,37 +76,29 @@ namespace remesh {
 
                     if (diff_norm > max) {
                         max = diff_norm;
-                        pid = pts[k];
+                        pid = pts->at(k);
                     }
                 }
             }
 
         }
         double percChange = max / Jc.norm();
-        return RET_JD(pid, max, percChange);
+        return {pid, max, percChange};
     }
 
-    double getDist(vtkIdType pid1, vtkIdType pid2, vtkPoints *PointArray) {
-        double *pt = PointArray->GetPoint(pid1);
-        Point ptloc1 = Point(pt[0], pt[1], pt[2]);
-        pt = PointArray->GetPoint(pid2);
-        Point ptloc2 = Point(pt[0], pt[1], pt[2]);
+    double getDist(int pid1, int pid2, VTKparser &parser) {
+//        auto pt = PointArray->GetPoint(pid1);
+        auto pt = parser.getVec3FromPID(pid1);
+        Point ptloc1 = Point(pt->at(0), pt->at(1), pt->at(2));
+//        pt = PointArray->GetPoint(pid2);
+        pt = parser.getVec3FromPID(pid2);
+        Point ptloc2 = Point(pt->at(0), pt->at(1), pt->at(2));
         Point diff = ptloc1 - ptloc2;
 
         if (pid1 == pid2) { return 1e-6; }
         return diff.norm();
     }
 
-#ifdef old
-    void generateBgMesh(const std::string& fileName,
-                        const std::string& geoFileName = "washerFIELD.geo",
-                        double mindj = 2e10,
-                        const long  double min_len = 0.9E-7f,
-                        const long double max_len = 8E-6f,
-                        const double frac_min_norm = 0.01,
-                        const double frac_max_norm = 0.2,
-                        std::string mFileName = "washer"){
-#else
 
     void generateBgMesh(const std::string &fileName,
                         const std::string &geoFileName = "washerFIELD.geo",
@@ -116,144 +107,110 @@ namespace remesh {
                         double minChar = 1e-8,
                         int debug = 0
     ) {
-#endif
+        g_debug = debug;
         using namespace std;
         meshFileName = std::move(mFileName);
         //read in file
-        vtkNew<vtkGenericDataObjectReader> reader;
-        reader->SetFileName(fileName.c_str());
-        reader->Update();
+//        vtkNew<vtkGenericDataObjectReader> reader;
+//        reader->SetFileName(fileName.c_str());
+//        reader->Update();
+        VTKparser parser(fileName);
+        parser.parse();
 
-        if (reader->IsFileUnstructuredGrid()) {
-            ofstream POS(meshFileName + "RM.geo");
-            std::cout << "Reading file" << std::endl;
-            auto output = reader->GetUnstructuredGridOutput();
-            output->BuildLinks();
-            vtkPoints *PointArray = output->GetPoints();
-            // get data array
-            vtkDoubleArray *D_array = vtkDoubleArray::SafeDownCast(
-                    output->GetPointData()->GetArray("10.000GHz_fone_imag"));
+        ofstream POS(meshFileName + "RM.geo");
+        std::cout << "Reading file" << std::endl;
+
+//        vtkPoints *PointArray = output->GetPoints()
+        // get data array
+//        vtkDoubleArray *D_array = vtkDoubleArray::SafeDownCast(
+//                output->GetPointData()->GetArray("10.000GHz_fone_imag"));
 
 
-            POS << "View \"background mesh\" {" << endl;
-#ifdef  old
-            const double max_norm =  D_array->GetMaxNorm() * frac_max_norm;
-            const double min_norm = D_array->GetMaxNorm() * frac_min_norm;
-#endif
-            // loop through each cell
-            auto num = output->GetNumberOfCells();
-            for (vtkIdType i = 0; i < num; i++) {
-#ifdef old
-                vtkIdType npts;
-                vtkIdType const * pts;
-                // Then use cell ids to get points
-                output->GetCellPoints(i,npts,pts);
-                POS << "ST(";
-                for (vtkIdType k = 0; k < npts-1; k++){
-                    double * pt = PointArray->GetPoint(pts[k]);
-                    Point p = (Point) {pt[0], pt[1], pt[2]};
-//                    p.z = std::round(p.z * 1e-50) / 1e-50;
+        POS << "View \"background mesh\" {" << endl;
 
-                    POS << p.x << "," << p.y << "," << p.z << ',';
+        // loop through each cell
+//        auto num = output->GetNumberOfCells();
+        int num = parser.getNumCells();
+
+        for (int i = 0; i < num; i++) {
+
+            vector<pair<Point, double>> pcl;
+            // loop through each point in cell
+            int npts;
+            std::shared_ptr<std::vector<int>> pts = parser.getPointIDsFromCellId(i,npts);
+//            vtkIdType const *pts;
+            // Then use cell ids to get points
+//            output->GetCellPoints(i, npts, pts);
+            vector<int> ptsvec;
+            for (int k = 0; k < npts; k++) {
+                ptsvec.push_back(pts->at(k));
+            }
+            if (npts == 4) { POS << "SS("; } else { POS << "ST("; }
+
+            // loop through each point
+            for (int k = 0; k < ptsvec.size(); k++) {
+                RET_JD ret = getJdelta(ptsvec[k], parser);
+                double n = 1;
+                // if mindj is a percentage is an actual value
+                /*if (ret.deltaj > mindj) {
+                    n = ret.deltaj/mindj;
+                    n = (n == 1) ?  2 : n;
+                }*/
+                if (ret.percChange > mindj) {
+                    n = ret.percChange / mindj;
                 }
-                double * pt = PointArray->GetPoint(pts[npts-1]);
-                Point p = (Point) {pt[0], pt[1], pt[2]};
-                POS << p.x << "," << p.y << "," << p.z;
-
-                double p1 = ((Point) B_PT(D_array->GetTuple3(pts[0]))).norm();
-                double p2 = ((Point) B_PT(D_array->GetTuple3(pts[1]))).norm();
-                double p3 = ((Point) B_PT(D_array->GetTuple3(pts[2]))).norm();
-
-                function<long double(double)> map = [&max_norm, &min_norm, &max_len, &min_len](double x) ->long  double {
-                    if (x < min_norm) {
-                        return max_len;
-                    } else if (x > max_norm) {
-                        return min_len;
-                    } else {
-                        return ((max_len - min_len)/(min_norm - max_norm))*(x - max_norm) + min_len;
-                    }
-                };
-
-//            cout << 1/(p1*1E8) << endl;
-                POS << "){" << map(p1) << "," << map(p2) << "," << map(p3) << "};" << endl;
-#endif
-                vector<pair<Point, double>> pcl;
-                // loop through each point in cell
-                vtkIdType npts;
-                vtkIdType const *pts;
-                // Then use cell ids to get points
-                output->GetCellPoints(i, npts, pts);
-                vector<vtkIdType> ptsvec;
-                for (vtkIdType k = 0; k < npts; k++) {
-                    ptsvec.push_back(pts[k]);
-                }
-                if (npts == 4) { POS << "SS("; } else { POS << "ST("; }
-
-                // loop through each point
-                for (vtkIdType k = 0; k < ptsvec.size(); k++) {
-                    RET_JD ret = getJdelta(ptsvec[k], PointArray, D_array, output);
-                    double n = 1;
-                    // if mindj is a percentage is an actual value
-                    /*if (ret.deltaj > mindj) {
-                        n = ret.deltaj/mindj;
-                        n = (n == 1) ?  2 : n;
-                    }*/
-                    if (ret.percChange > mindj) {
-                        n = ret.percChange / mindj;
-                    }
-                    n = (n == 0) ? 1 : n;
-                    double *pt = PointArray->GetPoint(ptsvec[k]);
-                    Point ptloc = Point(pt[0], pt[1], pt[2]);
-                    double charlen = (getDist(ptsvec[k], ret.PID, PointArray)) / (n);
-                    if (charlen < minChar) { charlen = minChar; }
+                n = (n == 0) ? 1 : n;
+//                double *pt = PointArray->GetPoint(ptsvec[k]);
+                auto pt = parser.getVec3FromPID(ptsvec[k]);
+                Point ptloc = Point(pt->at(0), pt->at(1), pt->at(2));
+                double charlen = (getDist(ptsvec[k], ret.PID, parser)) / (n);
+                if (charlen < minChar) { charlen = minChar; }
 //                    cout << charlen << endl;
-                    pair<Point, double> v(ptloc, charlen);
+                pair<Point, double> v(ptloc, charlen);
 //                    cout << charlen << endl;
-                    if (debug) {
-                        cout << charlen << endl;
-                    }
-                    pcl.push_back(v);
-                }
+//                if (debug) {
+//                    cout << charlen << endl;
+//                }
+                pcl.push_back(v);
+            }
 //                cout << pcl.size() << endl;
-                if (pcl.size() == 4) {
-                    POS << pcl[0].first.x << "," << pcl[0].first.y << "," << pcl[0].first.z << ",";
-                    POS << pcl[1].first.x << "," << pcl[1].first.y << "," << pcl[1].first.z << ",";
-                    POS << pcl[2].first.x << "," << pcl[2].first.y << "," << pcl[2].first.z << ",";
-                    POS << pcl[3].first.x << "," << pcl[3].first.y << "," << pcl[3].first.z << "){";
-                    POS << pcl[0].second << "," << pcl[1].second << "," << pcl[2].second << "," << pcl[3].second << "};"
-                        << endl;
-                } else {
-                    POS << pcl[0].first.x << "," << pcl[0].first.y << "," << pcl[0].first.z << ",";
-                    POS << pcl[1].first.x << "," << pcl[1].first.y << "," << pcl[1].first.z << ",";
-                    POS << pcl[2].first.x << "," << pcl[2].first.y << "," << pcl[2].first.z << "){";
-                    POS << pcl[0].second << "," << pcl[1].second << "," << pcl[2].second << "};"
-                        << endl;
-                }
-
+            if (pcl.size() == 4) {
+                POS << pcl[0].first.x << "," << pcl[0].first.y << "," << pcl[0].first.z << ",";
+                POS << pcl[1].first.x << "," << pcl[1].first.y << "," << pcl[1].first.z << ",";
+                POS << pcl[2].first.x << "," << pcl[2].first.y << "," << pcl[2].first.z << ",";
+                POS << pcl[3].first.x << "," << pcl[3].first.y << "," << pcl[3].first.z << "){";
+                POS << pcl[0].second << "," << pcl[1].second << "," << pcl[2].second << "," << pcl[3].second << "};"
+                    << endl;
+            } else {
+                POS << pcl[0].first.x << "," << pcl[0].first.y << "," << pcl[0].first.z << ",";
+                POS << pcl[1].first.x << "," << pcl[1].first.y << "," << pcl[1].first.z << ",";
+                POS << pcl[2].first.x << "," << pcl[2].first.y << "," << pcl[2].first.z << "){";
+                POS << pcl[0].second << "," << pcl[1].second << "," << pcl[2].second << "};"
+                    << endl;
             }
 
-
-            POS << "};" << endl << endl;
-            POS << "Background Mesh View[0];" << endl;
-            POS << "Mesh.MeshSizeExtendFromBoundary = 0;" << endl << "Mesh.MeshSizeFromPoints = 0;" << endl
-                << "Mesh.MeshSizeFromCurvature = 0;" << endl;
-            //open the geometry file
-            ifstream GEO(geoFileName);
-            regex pattern("(Save +\").+(\";)");
-            string line;
-            while (std::getline(GEO, line)) {
-                if (line.find("Save") != string::npos) {
-                    string replaced = regex_replace(line, pattern, "$1" + meshFileName + ".msh" + "$2");
-                    line = replaced;
-                }
-                POS << line << endl;
-            }
-            GEO.close();
-            POS.close();
-            cout << "Finished writing file with background mesh" << endl;
-        } else {
-            cout << "Only unstructured grids are supported" << endl;
         }
+
+
+        POS << "};" << endl << endl;
+        POS << "Background Mesh View[0];" << endl;
+        POS << "Mesh.MeshSizeExtendFromBoundary = 0;" << endl << "Mesh.MeshSizeFromPoints = 0;" << endl
+            << "Mesh.MeshSizeFromCurvature = 0;" << endl;
+        //open the geometry file
+        ifstream GEO(geoFileName);
+        regex pattern("(Save +\").+(\";)");
+        string line;
+        while (std::getline(GEO, line)) {
+            if (line.find("Save") != string::npos) {
+                string replaced = regex_replace(line, pattern, "$1" + meshFileName + ".msh" + "$2");
+                line = replaced;
+            }
+            POS << line << endl;
+        }
+        GEO.close();
+        POS.close();
+        cout << "Finished writing file with background mesh" << endl;
+
 
     }
 
@@ -277,7 +234,12 @@ namespace remesh {
         using namespace std;
         cout << "starting gmsh: " << "gmsh " + meshFileName + "RM.geo -0 -v 0" << endl;
 //        string run = "gmsh "+meshFileName+".geo -0 -v 1";
-        string run = "gmsh " + meshFileName + "RM.geo -0";
+        string run;
+        if (!g_debug) {
+            run = "gmsh " + meshFileName + "RM.geo -0";
+        } else {
+            run = "gmsh " + meshFileName + "RM.geo";
+        }
         system(run.c_str());
         cout << "gmsh finished" << endl;
     }
