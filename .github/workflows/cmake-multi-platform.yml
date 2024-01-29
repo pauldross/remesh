@@ -1,0 +1,41 @@
+name: Build on multiple platforms
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v2
+      
+    - name: download deps
+      run: | 
+        git clone https://github.com/pauldross/VTKParser.git
+    - name: Set up CMake
+      run: |
+        mkdir build
+        cd build
+        cmake ..
+      working-directory: ${{ github.workspace }}
+
+    - name: Build
+      run: cmake --build build --config Release
+      working-directory: ${{ github.workspace }}
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: build-artifact-${{ runner.os }}
+        path: ${{ github.workspace }}/build
