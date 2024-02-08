@@ -36,7 +36,7 @@ Optional arguments:
   ```
   2) Run tth:
   ```console
-  tth settings_washer.json
+  $ tth settings_washer.json
   ```
   3) An output folder should be generated. Now is a good time to look at the mesh and the results in the ouput folder.
   4) Run the following command to generate an optimised mesh (omit -debug if you do not wish to see the optimised mesh):
